@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+
+	<head>
+
+		<meta charset="utf-8">
+		<title>Get generic Bemis-Murcko scaffold from valid (according to RDKit) SMILES</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<style type="text/css">
+			html{font-family: "Arial";}
+			h2{margin-top: 75px;
+					margin-bottom: 40px;}
+			svg{border: 1px solid #665544;}
+			.wrapper {
+				justify-content: center;
+				display: grid;
+				grid-template-columns: 400px 400px;
+				column-gap: 100px;
+				align-items: center;
+			}
+			.cntrd_div {
+				text-align: center;
+				padding: 10px;
+			}
+			canvas {
+				color: #0088dd;
+				border-bottom: 1px solid #0088dd;
+				border-top: 1px solid #0088dd;
+				border-left: 1px solid #0088dd;
+				border-right: 1px solid #0088dd;
+			}
+		</style>
+		<!-- SEE: https://github.com/rdkit/rdkit-js?tab=readme-ov-file#install -->
+		<script src="https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js"></script>
+		<script>
+    window
+      .initRDKitModule()
+      .then(function (RDKit) {
+        console.log("RDKit version: " + RDKit.version());
+        window.RDKit = RDKit;
+        /**
+         * The RDKit module is now loaded.
+         * You can use it anywhere.
+         */
+      })
+      .catch(() => {
+        // handle loading errors here...
+      });
+  	</script>
+	</head>
+
+		<body>
+
+		<h1>RSCF 23-73-01058: Get generic Bemis-Murcko scaffolds from valid SMILES <hr /> </h1>
+
+		<div class = "wrapper">
+			<!-- Canvas to render the structures -->
+			<div><p>Original Structure</p>
+					<canvas id = "canvas_structure" width = "400" height = "400"/>
+			</div>
+			<div><p>Generic Scaffold</p>
+				<canvas id = "canvas_scaffold" width = "400" height = "400"/>
+			</div>
+		</div>
+		<div class = "cntrd_div">
+			<form id = "form_smiles">
+				<input type="text" name="field_smiles" size="55" maxlength="3000" placeholder="paste valid SMILES here" />
+			</form>
+		</div>
+		<div class = "cntrd_div">
+			<button id = "start">submit</button>
+		</div>
+
+		</body>
+
+		<script type="text/javascript">
+			//General things
+			const canvas_structure = document.querySelector("#canvas_structure");
+			const context_structure = canvas_structure.getContext("2d");
+			const canvas_scaffold = document.querySelector("#canvas_scaffold");
+			const context_scaffold = canvas_scaffold.getContext("2d");
+			const input = document.querySelector("#form_smiles");
+			const rect_string = new RegExp('.*</rect>\n', 'ms');
+			const new_header = "<svg xmlns='http://www.w3.org/2000/svg'  viewBox='0 0 400 400' width='400' height='400' > <g id='structure'>\n";
+			//Some functions
+			//Function to draw thing on canvas
+			function draw_canvas (svg_thing, canvas, context) {
+				return new Promise((resolve, reject) => {
+					let img = new Image();
+					img.src = 'data:image/svg+xml; charset=utf8, ' + encodeURIComponent(svg_thing);
+					img.addEventListener('load', function(){context.drawImage(img, 0, 0,400, 400, 0, 0,400, 400); resolve("result");});
+				});
+			}
+			   /////////////////
+				//// PREPARE ////
+			 /////////////////
+			//Function to prepare smiles
+			function prepare_smiles (smiles_string) {
+				//Function to get the longest string
+				//#red This function is not intendent for the real life application at all
+				function longestString(arr) {
+	  			return arr.sort(function (a, b) {
+	      		return b.length - a.length;
+	  			})[0];
+				}
+				//MAKE GENERIC:
+				//Delete @, @H and H
+				smiles_string = smiles_string.replaceAll( '@H', '').replaceAll( '@', '').replaceAll( '@', '').replaceAll( 'H', '');
+				//Convert * to C
+				smiles_string = smiles_string.replaceAll("Cl", "C");
+				smiles_string = smiles_string.replaceAll("Br", "C");
+				smiles_string = smiles_string.replaceAll(/([BNOPSFI])/gi, "C");
+				smiles_string = smiles_string.replaceAll("c", "C");
+				//Clear isotopes
+				smiles_string = smiles_string.replaceAll(/([0-9]+)([cC]+)(\])/g, "$2]");
+				x_str = smiles_string;
+				//Clear charges
+				smiles_string = smiles_string.replaceAll(/(\-|\+)([0-9]*)(\])/g, "]");
+				//Clear brackets
+				smiles_string = smiles_string.replaceAll(/([\[\]])/g, '');
+				smiles_string = smiles_string.replaceAll(/(\(\))/g, '');
+				//Clear wedged bonds
+				smiles_string = smiles_string.replaceAll(/[\\]|[\/]/g, "");
+				smiles_string = smiles_string.replaceAll(/[\\]|[\/]/g, "");
+				//Clear bonds
+				smiles_string = smiles_string.replaceAll(/([\-=#$:])/g, "");
+				//Use only the largest component
+				if (/\./.test(smiles_string)) {
+					let strings = smiles_string.split('\.');
+					smiles_string = longestString(strings);
+				}
+				//Return
+				return smiles_string;
+			}
+			   /////////////////
+			  ////// GET //////
+		   ////////////////////////////
+			//Function to get scaffold//
+		 ////////////////////////////
+			function get_scaffold (smiles) {
+				//Function to assess the belonging:
+				function interval_belonging (interval_arr, query) {
+					return interval_arr.some((arrVal) => (query >= arrVal[0]) && query <= arrVal[1]);
+				}
+				//Functionы to sort the array of numbers, array of objects having numeric properties 
+				function compareNumbers (a, b) {
+  				return a - b;
+				}
+				function compareNumbers_inArr (a, b) {
+  				return a[0] - b[0];
+				}
+				let scaffold = '';
+				//Check if SMILES has rings
+				if (!(/([CNOPSFRI\[])([0-9]|%)/gi).test(smiles)) {
+					scaffold = '*';
+					return scaffold;
+				}
+				//Some variables to describe the SMILES
+				//Parameters of positions, which are important:
+				// Given codes are not mutually exclusive, at the same time, for * to work fine particular order is needed
+				// Thus, positions will have the IDs based on their index and weight
+				// codes												Description																	 Weight
+ 				// r_e		-			Ring's end, the last position of this ring.							-			0.1
+ 				// ar			-			Afterring, the first position after the ring's end			-			0.2
+ 				// r_s		-			Ring's start, the first position in ring.								-			0.3
+ 				// bp			-			Branching point, the last position before '('.					-			0.4
+ 				// ob			-			'(' itself.																							-			0.5
+ 				// b_s		-			Branch's start, the first position after '('.						-			0.6
+ 				// b_e		-			Branch's end, the last position before ')'.							-			0.7
+ 				// cb			-			')' itself.																							-			0.8
+ 				// cp			-			Continuation point, the first position after ')'.				-			0.9
+				let index = 0;
+				let type = '_';
+				//Base level -> 0, branching -> +1
+				let level = 0;
+				let ring_ids = new Set();
+				let ring_index = new Set();
+				//Structs to store the important positions
+				positions = new Map();
+				let positions_arr = [];
+				//Some indicator variables
+				let ring_detected = 0;
+				let ring_id_temp = [];
+				let branch_number = -1;
+				let bp_number = -1;
+				let bp_numbers = [];
+				let cp_number = -1;
+				let open_branches = [];
+				//#FCD0BA#FCD0BA#FCD0BA
+				// T R A V E R S E     S M I L E S
+				//Simply traverse the smiles and mark important positions (BP, R_start, R_end, R-ids) without making paths or fragments
+				smiles_traversal: for (let i = 0; i < smiles.length; i++) {
+					//Look up for the ring's ID after C atom only
+					if (typeof smiles[i + 1] != "undefined") {
+						if ( (/[C]/).test(smiles[i]) && ( (/[0-9]/).test(smiles[i + 1]) ) )  {
+							ring_detected = i;
+						}
+					//Parse the IDs
+					if (ring_detected == i) {
+						let r_id_symbol_counter = 1;
+						let r_id = '';
+						loop_ring_id: for (let k = ring_detected + 1; k < smiles.length; k++) {
+							//Consider square brackets
+							if (smiles[k] == '[') {
+								//console.log(k);
+								do {
+									k = k + 1;
+								} while (smiles[k] == ']');
+							}
+							//Check if new atom (end of the rings' IDs), consider bonds and branches
+							if ((/([CNOPSFRI\[\(\)])/i).test(smiles[k])) break loop_ring_id;
+							if ((/[-=#$]/).test(smiles[k])) r_id_symbol_counter = r_id_symbol_counter + 1;
+							if ((/%/).test(smiles[k])) r_id_symbol_counter = r_id_symbol_counter + 2;
+							r_id = r_id + smiles[k];
+							//Decrease the symbol_counter to get this ID
+							r_id_symbol_counter = r_id_symbol_counter - 1;
+							if ( r_id_symbol_counter == 0 ) {
+								r_id = r_id.replaceAll(/[^0-9%]/g, '');
+								ring_id_temp.push(r_id);
+								r_id = '';
+							//Increase the symbol counter to process the next ID
+							r_id_symbol_counter = 1;
+							}
+						}
+					}
+					//#FCD0BA
+					//Work with the rings
+					if (ring_id_temp.length > 0) {
+						let r_id = '';
+						let length = ring_id_temp.length;
+						//Get the current ID and add/delete them; .pop() method is used -> main counter should decrease
+						for (let k = 0; k < length; k++) {
+							r_id = ring_id_temp.pop();
+							//Check whether the ID is in ring_ids. Yes -> close the ring, No -> open the ring 
+							if ( ring_ids.has(r_id) ) {
+								//Get the position of the last r_id's symbol
+								let i_ring_end = 0;
+								loop_ring_id_end: for (let k = ring_detected + 1; k < smiles.length; k++) {
+									if (smiles[k] == r_id) {
+										i_ring_end = k;
+										break loop_ring_id_end;
+										}
+									}
+								//Add the r_e position
+								positions.set(i_ring_end + 0.2, {'id': i_ring_end + 0.2, 'number': positions.size, 'index': i_ring_end, 'type': 'r_e', 'level': level, 'ring_id': r_id });
+								positions_arr.push([i_ring_end, i_ring_end + 0.2, 'r_e', level]);
+								ring_ids.delete(r_id);
+								ring_index.add(i_ring_end);
+								//Add the ar position
+								if (typeof smiles[i_ring_end + 1] != "undefined") {
+									if ( smiles[i_ring_end + 1] != "\(" && smiles[i_ring_end + 1] != "\)"  &&  !(/[0-9]|%/).test(smiles[i_ring_end + 1]) ) {
+											positions.set(i_ring_end+1 + 0.3, {'id': i_ring_end+1 + 0.3, 'number': positions.size, 'index': i_ring_end+1, 'type': 'ar', 'level': level, 'ring_id': r_id });
+											positions_arr.push([i_ring_end+1, i_ring_end+1 + 0.3, 'ar', level]);
+									}
+								}
+							} else {
+								//Add the r_e position
+								ring_ids.add(r_id);
+								ring_index.add(i);
+								positions.set(i + 0.3, {'id': i + 0.3, 'index': i, 'number': positions.size, 'type': 'r_s', 'level': level, 'ring_id': r_id });
+								positions_arr.push([i, i + 0.3, 'r_s', level]);
+							}
+						}
+					}
+					//#FCD0BA
+					//Work with branching points
+					if (typeof smiles[i + 1] != "undefined") {
+						//Consider the case where BP exists already (no need for another BP)
+						if (smiles[i + 1] == '\(' && smiles[i] != '\)') {
+							bp_number = bp_number + 1;
+							bp_numbers.push(bp_number);
+							positions.set( i+ 0.4, {'id': i+ 0.4, 'index': i, 'type': 'bp', 'number': positions.size, 'level': level, 'validated': 0, 'bp_id': bp_number });
+							positions_arr.push([i, i+ 0.4, 'bp', level]);
+						}
+						if (smiles[i] == '\(') {
+							//Indicators
+							branch_number = branch_number + 1;
+							open_branches.push(branch_number);
+							//Annotate
+							level = level + 1;
+							positions.set(i + 0.5, {'id': i + 0.5, 'index': i, 'type': 'ob', 'number': positions.size, 'level': level, 'branch_id': branch_number });
+							positions.set(i+1 + 0.6, {'id': i + 1 + 0.6, 'index': i+1, 'type': 'b_s', 'number': positions.size, 'level': level, 'branch_id': branch_number });
+							positions_arr.push([i, i + 0.5, 'ob', level]);
+							positions_arr.push([i+1, i+1+ 0.6, 'b_s', level]);
+						}
+					}
+					if (smiles[i] == '\)') {
+						closing_branch_number = open_branches.pop();
+						positions.set(i-1 + 0.7, {'id': i-1 + 0.7, 'index': i-1, 'type': 'b_e', 'number': positions.size, 'level': level, 'branch_id': closing_branch_number });
+						positions.set(i + 0.8, {'id': i + 0.8, 'index': i, 'type': 'cb', 'number': positions.size, 'level': level, 'branch_id': closing_branch_number });
+						positions_arr.push([i-1, i-1 + 0.7, 'b_e', level]);
+						positions_arr.push([i, i + 0.8, 'cb', level]);
+						level = level - 1;
+						//Add continuation point
+						cp_number = bp_numbers.pop();
+						if ( (/[CNOPSFRI\[]/gi).test(smiles[i+1]) ) {
+							positions.set(i+1 + 0.9, {'id': i+1 + 0.9, 'index': i+1, 'type': 'cp', 'number': positions.size, 'level': level, 'cp_id': cp_number });
+							positions_arr.push([i+1, i+1 + 0.9, 'cp', level]);
+						}
+					}	
+				}
+			}
+				//#FCD0BA Sort positions by index
+				positions_arr = [];
+				positions = Array.from(positions).sort((a, b) => a[0] - b[0]);
+				for (let i = 0; i < positions.length; i++) {
+					positions[i][1]['number'] = i;
+					positions_arr.push( [ positions[i][1]['index'], positions[i][1]['id'], positions[i][1]['type'], positions[i][1]['level'] ]  )
+				}
+				positions = new Map(positions);
+				//#FCD0BA
+				//Gather connections between the selected positions and get indices belonging to the generic scaffold
+				scaffold_set = new Set();
+				any_set = new Set();
+				links = [];
+				links_start = [];
+				//#FCD0BA
+				//Use positions to reconstruct graph and delete loose ends besides rings
+				//Traverse positions
+				build_graph_loop: for (const [key, value] of positions) {
+					//Some vars to be used
+					let type  = value['type'];
+					let index = value['index'];
+					let number = value['number'];
+					let is_ring;
+					is_ring = ring_index.has(index);
+					//Collect each index
+					any_set.add(value['index']);
+					//Save and exclude OB / CB
+					if ( type == 'ob' | type == 'cb' ) {
+						scaffold_set.add(index);
+						continue;
+					}
+					//Collect links
+					//RING
+					if ( type == 'r_s' | type == 'r_e' ) {
+						if (typeof positions_arr[number + 1] != "undefined") {
+							//Push the link
+							links.push( [ index, positions_arr[number + 1][0], is_ring ] );
+							//Push the backlink
+							links.push( [ positions_arr[number + 1][0], index, ring_index.has( positions_arr[number + 1][0] ) ] );
+						}
+						if (typeof positions_arr[number - 1] != "undefined") {
+							if ( positions_arr[number - 1][2] != 'cb' ) {
+								//Push the link
+								links.push( [ index, positions_arr[number - 1][0], is_ring ] );
+								//Push the backlink
+								links.push( [ positions_arr[number - 1][0], index, ring_index.has( positions_arr[number - 1][0] ) ] );
+							}
+						}
+					}
+					//AR
+					if ( type == 'ar' && is_ring != 1 ) {
+						//console.log(`AR: ${index}`);
+						links.push( [ index, positions_arr[number - 1][0], is_ring ] );
+						links.push( [ positions_arr[number - 1][0], index, ring_index.has( positions_arr[number - 1][0] ) ] );
+					}
+					//B_E
+					if ( type == 'b_e' ) {
+						if (typeof positions_arr[number - 1] != "undefined" ) {
+							if ( positions_arr[number - 1] != 'ob' && positions_arr[number - 1][0] != index ) {
+								//Push the link
+								links.push( [ index, positions_arr[number - 1][0], is_ring ] );
+								//Push the backlink
+								links.push( [ positions_arr[number - 1][0], index, ring_index.has( positions_arr[number - 1][0] ) ] );
+							}
+						}
+					}
+					//B_S two connections at least -> get the left BP
+					if ( type == 'b_s' ) {
+						if ( positions_arr[number + 1][2] != 'cb' ) {
+							if ( positions_arr[number + 1][0] != index ) {
+								//Push the link
+								links.push( [ index, positions_arr[number + 1][0], is_ring ] );
+								//Push the backlink
+								links.push( [ positions_arr[number + 1][0], index, ring_index.has( positions_arr[number + 1][0] ) ] );
+							}
+						}
+						//Get the index of the BP of origin
+						let level = value['level'];
+						loop_for_bp_fromBS: for (let i = number; i >= 0; i--) {
+							if ( positions_arr[i][3] == level - 1 && positions_arr[i][2] == 'bp' ) {
+								//Push the link
+								links.push( [ index, positions_arr[i][0], is_ring ] );
+								//Push the backlink
+								links.push( [ positions_arr[i][0], index, ring_index.has( positions_arr[i][0] ) ] );
+								//console.log(i);log(`Number: ${number}`)
+								//console.log(i);log(`Index: ${index}`)
+								//console.log(i);log(`BP index: ${i}`)
+								break loop_for_bp_fromBS;
+							}
+						}
+					}
+					//C_P two connections at least -> get the left BP
+					if ( type == 'cp' ) {
+						if (typeof positions_arr[number + 1] != "undefined"  ) {
+							if (positions_arr[number + 1][2] != "ob"  ) {
+								//Push the link
+								links.push( [ index, positions_arr[number + 1][0], is_ring ] );
+								//Push the backlink
+								links.push( [ positions_arr[number + 1][0], index, ring_index.has( positions_arr[number + 1][0] ) ] );
+							}
+						}
+						//Get the index of the BP of origin
+						let level = value['level'];
+						for (let i = number; i >= 0; i--) {
+							if ( positions_arr[i][3] == level && positions_arr[i][2] == 'bp' && positions_arr[i][0] != index ) {
+								//Push the link
+								links.push( [ index, positions_arr[i][0], is_ring ] );
+								//Push the backlink
+								links.push( [ positions_arr[i][0], index, ring_index.has( positions_arr[i][0] ) ] );
+								break;
+							}
+						}
+					}
+					//BP -> check branches
+					if ( type == 'bp' ) {
+						if ( number > 0 && positions_arr[number - 1][2] != 'cb' && positions_arr[number - 1][2] != 'ob' ) {
+							//Push the link
+							links.push( [ index, positions_arr[number - 1][0], is_ring ] );
+							//Push the backlink
+							links.push( [ positions_arr[number - 1][0], index, ring_index.has( positions_arr[number - 1][0] ) ] );
+						}
+						//Get the indices of the CP and B_S
+						let level = value['level'];
+						loop_for_cp: for (let i = number; i < positions_arr.length; i++) {
+							if ( positions_arr[i][3] == level+1 && positions_arr[i][2] == 'b_s' ) {
+								//Push the link
+								links.push( [ index, positions_arr[i][0], is_ring ] );
+								//Push the backlink
+								links.push( [ positions_arr[i][0], index,  ring_index.has( positions_arr[i][0] ) ] );
+							}
+							if ( positions_arr[i][3] == level && positions_arr[i][2] == 'cp' ) {
+								//Push the link
+								links.push( [ index, positions_arr[i][0], is_ring ] );
+								//Push the backlink
+								links.push( [ positions_arr[i][0], index,  ring_index.has( positions_arr[i][0] ) ] );
+								break loop_for_cp;
+							}
+						}
+					}
+				}
+				//#FCD0BA
+				//Process the links between the important points
+				let raw_links = links;
+				links = [];
+				for (let i = 0; i < raw_links.length; i++) {
+					//if ( raw_links[i][0] != raw_links[i][1] | raw_links[i][2] == 'r_s' | raw_links[i][2] == 'r_e' ) {
+					if ( raw_links[i][0] != raw_links[i][1] ) {
+							links.push(raw_links[i]);
+					}
+				}
+				//Make links unique
+				let flat_links = [];
+				//Make flat array from array of arrays
+				links.forEach((item) => { flat_links.push(item.join("-")) } );
+				//Make unique
+				flat_links = [...new Set(flat_links.sort())];
+				//Split back
+				flat_links.forEach((item, index) => flat_links[index] = item.split('-'));
+				flat_links.forEach((item, index) => flat_links[index][0] = Number(flat_links[index][0]));
+				flat_links.forEach((item, index) => flat_links[index][1] = Number(flat_links[index][1]));
+				links = flat_links;
+				//#FCD0BA
+				//Remove loose ends
+				let loose_ends;
+				let rings;
+				do {loose_ends = [];
+					let intermediate_arr = [];
+					//Get the inidices
+					for (let i = 0; i < links.length; i++) {
+						if (links[i][2] != 'true') loose_ends.push(links[i][0]);
+					}
+					//Get the infices occuring once
+					loose_ends = loose_ends.filter((num) => { return loose_ends.indexOf(num) === loose_ends.lastIndexOf(num); });
+					//Delete from links
+					for (let i = 0; i < links.length; i++) {
+						if ( links[i][2] == 1 | (!loose_ends.includes(links[i][0]) && !loose_ends.includes(links[i][1])) ) intermediate_arr.push(links[i]);
+					}
+					links = intermediate_arr;
+								} while ( loose_ends.length > 0 );
+				//#FCD0BA
+				//Get the scaffold inidices
+				for (let i = 0; i < links.length; i++) {
+					scaffold_set.add(links[i][0]);
+					scaffold_set.add(links[i][1]);
+				}
+				//#FCD0BA
+				//C R E A T E 	 A L L O W E D 	 I N T E R V A L S
+				avoid_set = any_set.difference(scaffold_set);
+				//Get the useful array from sets
+				allow_forbid_arr = [];
+				for (const elem of scaffold_set) {
+					allow_forbid_arr.push( [elem, 1] );
+				}
+				for (const elem of avoid_set) {
+					allow_forbid_arr.push( [elem, 0] );
+				}
+				//Sort useful array
+				allow_forbid_arr.sort(compareNumbers_inArr);
+				//Prepare intervals
+				intervals = [];
+				for (let i = 0; i < allow_forbid_arr.length; i++) {
+					let upper;
+					let lower = allow_forbid_arr[i];
+					typeof allow_forbid_arr[i + 1] == "undefined" ? upper = allow_forbid_arr[i] : upper = allow_forbid_arr[i+1];
+					if ( lower[1] == 0 && upper[1] == 0 ) continue;
+					if ( lower[1] == 0 && upper[1] == 1 ) {
+						lower = upper[0];
+						upper = upper[0];
+						intervals.push( [lower, upper] );
+						continue;
+					}
+					lower[1] == 1 ? lower = lower[0] : lower = lower[0] + 1;
+					upper[1] == 1 ? upper = upper[0] : upper = upper[0] - 1;
+					intervals.push( [lower, upper] );
+				}
+				//Cut the scaffold from smiles using scaffold_set and avoid_set
+				scaffold = [];		
+				//Extract scaffold
+				scaffold_extraction: for (let i = 0; i < smiles.length; i++) {
+					//Check intervals' belonging and push indices
+					if ( interval_belonging(intervals, i) ) {
+						scaffold.push(smiles[i]);
+					}
+				}
+				//##FCD0BA Postprocess the scaffold-string
+				scaffold_str = (scaffold.toString()).replaceAll(',', '')
+				do {scaffold_str = scaffold_str.replaceAll('\(\)', '');} while ( /\(\)/.test(scaffold_str) );
+				//Check for the openning bracket on start and delete it along with its pair
+				if ( /^\(/.test(scaffold_str) ) {
+					let closing_br = 0;
+					scaffold_str = scaffold_str.replace( scaffold_str[0], '' );
+					for (let br_i = 0; br_i < scaffold_str.length; br_i++) {
+						scaffold_str[br_i] == '\(' ? closing_br = closing_br - 1 : closing_br = closing_br;
+						scaffold_str[br_i] == '\)' ? closing_br = closing_br + 1 : closing_br = closing_br;
+						if ( closing_br == 1 ) {					
+							scaffold_str = scaffold_str.substr(0, br_i) + scaffold_str.substr(br_i+1);
+							break;
+						}
+					}
+				}
+				return scaffold_str;
+			}
+			//Function to do the whole thing
+			async function draw_structures (input, canvas_structure, canvas_scaffold,
+																							context_structure,
+																							context_scaffold, draw_canvas, rect_string, new_header, prepare_smiles){
+				//Clear the canvas
+				context_structure.clearRect(0, 0, 400, 400);
+				context_scaffold.clearRect(0, 0, 400, 400);
+				//Get the data, SEE: https://developer.mozilla.org/en-US/docs/Web/API/HTMLFormElement/formdata_event
+				const formData = new FormData(input);
+				const input_smiles = formData.get("field_smiles");
+				//Use RDKit.js, SEE: https://www.rdkitjs.com/#drawing-molecules-all-options
+				//Get mol for structure
+				mol = RDKit.get_mol(input_smiles);
+				smiles = mol.get_smiles();
+				//Get scaffold
+				prepared_smiles = prepare_smiles(smiles);
+				//console.log(i);log(`PREPARED SMILES: ${prepared_smiles}`);
+				scaff = get_scaffold(prepared_smiles);
+				//Generate SVG for structure
+				const svg_string_structure = mol.get_svg(400, 400).replace(rect_string, new_header).replace("</svg>", "</g></svg>");
+				//Draw structure on canvas
+				await draw_canvas(svg_string_structure, canvas_structure, context_structure);
+				//Work with scaffolds
+				mol_scaff = RDKit.get_mol(scaff);
+				mol_scaff.straighten_depiction();
+				const svg_string_scaffold = mol_scaff.get_svg(400, 400).replace(rect_string, new_header).replace("</svg>", "</g></svg>");
+				await draw_canvas(svg_string_scaffold, canvas_scaffold, context_scaffold);
+			}
+
+			//start the process
+			const start = document.querySelector("#start");
+			start.addEventListener("click", function() { draw_structures(input, canvas_structure, canvas_scaffold,
+																							context_structure,
+																							context_scaffold, draw_canvas, rect_string, new_header, prepare_smiles); }, false);
+		</script>
+
+	</body>
+</html>
